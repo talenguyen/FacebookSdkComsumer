@@ -19,21 +19,18 @@ import com.facebook.widget.LoginButton;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-
 /**
  * Created by giang on 1/14/15.
  */
 public abstract class FaceBookFragment extends Fragment {
 
-    private final String TAG;
+    private static final String PERMISSION = "publish_actions";
+    private static final String TAG = FaceBookFragment.class.getSimpleName();
+
     protected UiLifecycleHelper uiHelper;
     private LoginButton loginButton;
     private String[] permissionsString;
 
-    private static final List<String> PERMISSIONS = Arrays.asList("publish_actions");
     private static final String PENDING_PUBLISH_KEY = "pendingPublishReauthorization";
     private boolean pendingPublishReauthorization = false;
     private String name;
@@ -41,10 +38,7 @@ public abstract class FaceBookFragment extends Fragment {
     private String description;
     private String link;
     private String picture;
-
-    FaceBookFragment() {
-        TAG = getClass().getSimpleName();
-    }
+    private String message;
 
     public static enum ReadPermission {
         email,
@@ -53,10 +47,6 @@ public abstract class FaceBookFragment extends Fragment {
         user_likes,
         user_birthday,
         user_location
-    }
-
-    public static enum PublishPermission {
-        publish_actions,
     }
 
     private Session.StatusCallback callback = new Session.StatusCallback() {
@@ -177,73 +167,67 @@ public abstract class FaceBookFragment extends Fragment {
     }
 
     private void publishPendingStory() {
-        publishStory(name, caption, description, link, picture);
+        Session session = Session.getActiveSession();
+        Bundle postParams = new Bundle();
+        postParams.putString("message", message);
+        postParams.putString("name", name);
+        postParams.putString("caption", caption);
+        postParams.putString("description", description);
+        postParams.putString("link", link);
+        postParams.putString("picture", picture);
+
+        Request.Callback callback = new Request.Callback() {
+            public void onCompleted(Response response) {
+                JSONObject graphResponse = response
+                        .getGraphObject()
+                        .getInnerJSONObject();
+                String postId = null;
+                try {
+                    postId = graphResponse.getString("id");
+                } catch (JSONException e) {
+                    Log.i(TAG,
+                            "JSON error " + e.getMessage());
+                }
+                FacebookRequestError error = response.getError();
+                if (error != null) {
+                    onPublishStoryError(error);
+                } else {
+                    onPublishStoreSuccess(postId);
+                }
+            }
+        };
+
+        Request request = new Request(session, "me/feed", postParams,
+                HttpMethod.POST, callback);
+
+        RequestAsyncTask task = new RequestAsyncTask(request);
+        task.execute();
     }
 
-    protected void publishStory(String name, String caption, String description, String link, String picture) {
+    private boolean hasPublishPermission() {
+        Session session = Session.getActiveSession();
+        return session != null && session.getPermissions().contains("publish_actions");
+    }
+
+    protected void publishStory(String message, String name, String caption, String description, String link, String picture) {
+        this.message = message;
         this.name = name;
         this.caption = caption;
         this.description = description;
         this.link = link;
         this.picture = picture;
         Session session = Session.getActiveSession();
-
         if (session != null) {
-
-            // Check for publish permissions
-            List<String> permissions = session.getPermissions();
-            if (!isSubsetOf(PERMISSIONS, permissions)) {
-                pendingPublishReauthorization = true;
-                Session.NewPermissionsRequest newPermissionsRequest = new Session
-                        .NewPermissionsRequest(this, PERMISSIONS);
-                session.requestNewPublishPermissions(newPermissionsRequest);
+            if (hasPublishPermission()) {
+                // We can do the action right away.
+                publishPendingStory();
+                return;
+            } else if (session.isOpened()) {
+                // We need to get new permissions, then complete the action when we get called back.
+                session.requestNewPublishPermissions(new Session.NewPermissionsRequest(this, PERMISSION));
                 return;
             }
-
-            Bundle postParams = new Bundle();
-            postParams.putString("name", name);
-            postParams.putString("caption", caption);
-            postParams.putString("description", description);
-            postParams.putString("link", link);
-            postParams.putString("picture", picture);
-
-            Request.Callback callback = new Request.Callback() {
-                public void onCompleted(Response response) {
-                    JSONObject graphResponse = response
-                            .getGraphObject()
-                            .getInnerJSONObject();
-                    String postId = null;
-                    try {
-                        postId = graphResponse.getString("id");
-                    } catch (JSONException e) {
-                        Log.i(TAG,
-                                "JSON error " + e.getMessage());
-                    }
-                    FacebookRequestError error = response.getError();
-                    if (error != null) {
-                        onPublishStoryError(error);
-                    } else {
-                        onPublishStoreSuccess(postId);
-                    }
-                }
-            };
-
-            Request request = new Request(session, "me/feed", postParams,
-                    HttpMethod.POST, callback);
-
-            RequestAsyncTask task = new RequestAsyncTask(request);
-            task.execute();
         }
-
-    }
-
-    private boolean isSubsetOf(Collection<String> subset, Collection<String> superset) {
-        for (String string : subset) {
-            if (!superset.contains(string)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     protected void onPublishStoreSuccess(String postId) {
