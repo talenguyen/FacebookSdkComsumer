@@ -19,40 +19,49 @@ import com.facebook.widget.LoginButton;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.List;
+
 /**
  * Created by giang on 1/14/15.
  */
 public abstract class FaceBookFragment extends Fragment {
 
-    private static final String PERMISSION = "publish_actions";
+    private static final String PUBLISH_ACTIONS = "publish_actions";
     private static final String TAG = FaceBookFragment.class.getSimpleName();
+    private static final int PUBLISH_ACTION_ID = 1;
 
     protected UiLifecycleHelper uiHelper;
     private LoginButton loginButton;
     private String[] permissionsString;
 
-    private static final String PENDING_PUBLISH_KEY = "pendingPublishReauthorization";
-    private boolean pendingPublishReauthorization = false;
+    private static final String PENDING_REQUEST_PERMISSION_ID_KEY = "pendingRequestPermissionId";
     private String name;
     private String caption;
     private String description;
     private String link;
     private String picture;
     private String message;
+    private int requestPermissionsId = -1;
 
     public static enum ReadPermission {
         email,
-        public_profile,
-        user_friends,
         user_likes,
+        user_friends,
         user_birthday,
-        user_location
+        user_location,
+        user_about_me,
+        public_profile
     }
+
 
     private Session.StatusCallback callback = new Session.StatusCallback() {
         @Override
         public void call(Session session, SessionState state, Exception exception) {
-            if (exception != null && exception instanceof FacebookOperationCanceledException) {
+            if (requestPermissionsId != -1 &&
+                    state.equals(SessionState.OPENED_TOKEN_UPDATED)) {
+                onPermissionsUpdated(requestPermissionsId);
+                requestPermissionsId = -1;
+            } else if (exception != null && exception instanceof FacebookOperationCanceledException) {
                 onUserCancelLogin(session, state, exception);
             } else if (state.isOpened()) {
                 onLoginSuccess(session, state);
@@ -102,8 +111,7 @@ public abstract class FaceBookFragment extends Fragment {
         uiHelper = new UiLifecycleHelper(getActivity(), callback);
         uiHelper.onCreate(savedInstanceState);
         if (savedInstanceState != null) {
-            pendingPublishReauthorization =
-                    savedInstanceState.getBoolean(PENDING_PUBLISH_KEY, false);
+            requestPermissionsId = savedInstanceState.getInt(PENDING_REQUEST_PERMISSION_ID_KEY, -1);
         }
     }
 
@@ -113,11 +121,11 @@ public abstract class FaceBookFragment extends Fragment {
         // For scenarios where the main activity is launched and user
         // session is not null, the session state change notification
         // may not be triggered. Trigger it if it's open/closed.
-        final Session session = Session.getActiveSession();
-        if (session != null &&
-                (session.isOpened() || session.isClosed())) {
-            onSessionStateChange(session, session.getState(), null);
-        }
+//        final Session session = Session.getActiveSession();
+//        if (session != null &&
+//                (session.isOpened() || session.isClosed())) {
+//            onSessionStateChange(session, session.getState(), null);
+//        }
         uiHelper.onResume();
     }
 
@@ -142,7 +150,9 @@ public abstract class FaceBookFragment extends Fragment {
     @Override
     public void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        outState.putBoolean(PENDING_PUBLISH_KEY, pendingPublishReauthorization);
+        if (requestPermissionsId != -1) {
+            outState.putInt(PENDING_REQUEST_PERMISSION_ID_KEY, requestPermissionsId);
+        }
         uiHelper.onSaveInstanceState(outState);
     }
 
@@ -159,54 +169,14 @@ public abstract class FaceBookFragment extends Fragment {
     }
 
     protected void onSessionStateChange(Session session, SessionState state, Exception exception) {
-        if (pendingPublishReauthorization &&
-                state.equals(SessionState.OPENED_TOKEN_UPDATED)) {
-            pendingPublishReauthorization = false;
-            publishPendingStory();
+    }
+
+    protected void onPermissionsUpdated(int requestPermissionsId) {
+        switch (requestPermissionsId) {
+            case PUBLISH_ACTION_ID:
+                publishStory();
+                break;
         }
-    }
-
-    private void publishPendingStory() {
-        Session session = Session.getActiveSession();
-        Bundle postParams = new Bundle();
-        postParams.putString("message", message);
-        postParams.putString("name", name);
-        postParams.putString("caption", caption);
-        postParams.putString("description", description);
-        postParams.putString("link", link);
-        postParams.putString("picture", picture);
-
-        Request.Callback callback = new Request.Callback() {
-            public void onCompleted(Response response) {
-                JSONObject graphResponse = response
-                        .getGraphObject()
-                        .getInnerJSONObject();
-                String postId = null;
-                try {
-                    postId = graphResponse.getString("id");
-                } catch (JSONException e) {
-                    Log.i(TAG,
-                            "JSON error " + e.getMessage());
-                }
-                FacebookRequestError error = response.getError();
-                if (error != null) {
-                    onPublishStoryError(error);
-                } else {
-                    onPublishStoreSuccess(postId);
-                }
-            }
-        };
-
-        Request request = new Request(session, "me/feed", postParams,
-                HttpMethod.POST, callback);
-
-        RequestAsyncTask task = new RequestAsyncTask(request);
-        task.execute();
-    }
-
-    private boolean hasPublishPermission() {
-        Session session = Session.getActiveSession();
-        return session != null && session.getPermissions().contains("publish_actions");
     }
 
     protected void publishStory(String message, String name, String caption, String description, String link, String picture) {
@@ -218,16 +188,90 @@ public abstract class FaceBookFragment extends Fragment {
         this.picture = picture;
         Session session = Session.getActiveSession();
         if (session != null) {
-            if (hasPublishPermission()) {
+            if (hasPermission(PUBLISH_ACTIONS)) {
                 // We can do the action right away.
-                publishPendingStory();
+                publishStory();
                 return;
             } else if (session.isOpened()) {
                 // We need to get new permissions, then complete the action when we get called back.
-                session.requestNewPublishPermissions(new Session.NewPermissionsRequest(this, PERMISSION));
+                requestNewPublishPermissions(PUBLISH_ACTION_ID);
                 return;
             }
         }
+    }
+
+    protected void requestNewReadPermissions(int requestId, String... permissions) {
+        requestPermissionsId = requestId;
+        final Session session = Session.getActiveSession();
+        if (session != null && session.isOpened()) {
+            session.requestNewReadPermissions(new Session.NewPermissionsRequest(this, permissions));
+        }
+    }
+
+    protected void requestNewPublishPermissions(int requestId, String... permissions) {
+        requestPermissionsId = requestId;
+        final Session session = Session.getActiveSession();
+        if (session != null && session.isOpened()) {
+            session.requestNewPublishPermissions(new Session.NewPermissionsRequest(this, permissions));
+        }
+    }
+
+    protected boolean hasPermission(String... permissions) {
+        if (permissions == null || permissions.length == 0) {
+            return true;
+        }
+        Session session = Session.getActiveSession();
+        if (session == null) {
+            return false;
+        }
+        final List<String> archivedPermission = session.getPermissions();
+        if (archivedPermission == null || archivedPermission.size() == 0) {
+            return false;
+        }
+
+        for (String permission : permissions) {
+            if (!archivedPermission.contains(permission)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void publishStory() {
+        Bundle postParams = new Bundle();
+        postParams.putString("message", message);
+        postParams.putString("name", name);
+        postParams.putString("caption", caption);
+        postParams.putString("description", description);
+        postParams.putString("link", link);
+        postParams.putString("picture", picture);
+
+        Request.Callback callback = new Request.Callback() {
+            public void onCompleted(Response response) {
+                FacebookRequestError error = response.getError();
+                if (error != null) {
+                    onPublishStoryError(error);
+                } else {
+                    JSONObject graphResponse = response
+                            .getGraphObject()
+                            .getInnerJSONObject();
+                    String postId = null;
+                    try {
+                        postId = graphResponse.getString("id");
+                    } catch (JSONException e) {
+                        Log.i(TAG,
+                                "JSON error " + e.getMessage());
+                    }
+                    onPublishStoreSuccess(postId);
+                }
+            }
+        };
+
+        Request request = new Request(Session.getActiveSession(), "me/feed", postParams,
+                HttpMethod.POST, callback);
+
+        RequestAsyncTask task = new RequestAsyncTask(request);
+        task.execute();
     }
 
     protected void onPublishStoreSuccess(String postId) {
